@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+keybert
+sentence-transformers
+scikit-learn
+numpy
+google-generativeai
+python-multipart
+httpx
+beautifulsoup4
