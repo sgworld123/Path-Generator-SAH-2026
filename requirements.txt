@@ -8,3 +8,4 @@ google-generativeai
 python-multipart
 httpx
 beautifulsoup4
+youtube-transcript-api>=1.0.0

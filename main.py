@@ -12,14 +12,15 @@ import asyncio
 import httpx
 from concurrent.futures import ThreadPoolExecutor
 from bs4 import BeautifulSoup
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
+from youtube_transcript_api import YouTubeTranscriptApi
 
 app = FastAPI()
 
 # -------------------------
 # INITIALIZATION
 # -------------------------
-genai.configure(api_key="")
+genai.configure(api_key="AIzaSyBna-EWkPPcjKcs5AAUirw0qKj7tfchBDE")
 gemini_model = genai.GenerativeModel("gemini-2.5-flash")
 
 kw_model = KeyBERT()
@@ -85,24 +86,97 @@ async def fetch_github_readme(url: str) -> str:
     return resp.text
 
 
+def is_youtube_url(url: str) -> bool:
+    parsed = urlparse(url)
+    return parsed.netloc in ("www.youtube.com", "youtube.com", "youtu.be")
+
+
+def extract_video_id(url: str) -> str:
+    """Extract YouTube video ID from any YouTube URL format."""
+    parsed = urlparse(url)
+    if parsed.netloc == "youtu.be":
+        return parsed.path.lstrip("/").split("?")[0]
+    qs = parse_qs(parsed.query)
+    if "v" in qs:
+        return qs["v"][0]
+    raise ValueError(f"Cannot extract video ID from URL: {url}")
+
+
+def fetch_youtube_transcript_sync(video_id: str) -> str:
+    """
+    Fetch auto-generated or manual subtitles for a YouTube video.
+    Uses youtube-transcript-api v1.0+ API.
+    Tries English first, then falls back to any available language.
+    Runs synchronously — call via run_in_executor.
+    """
+    try:
+        ytt_api = YouTubeTranscriptApi()
+
+        try:
+            # Try English first (handles both manual and auto-generated)
+            fetched = ytt_api.fetch(video_id, languages=["en"])
+        except Exception:
+            try:
+                # Fall back: list available transcripts and pick first, translate to English
+                transcript_list = ytt_api.list(video_id)
+                transcript = next(iter(transcript_list))
+                fetched = transcript.translate("en").fetch()
+            except Exception:
+                # Last resort: fetch whatever is available without language constraint
+                fetched = ytt_api.fetch(video_id)
+
+        # Join all snippet texts into a single string
+        text = " ".join(snippet.text.strip() for snippet in fetched)
+        # Strip subtitle artifacts like [Music] [Applause] [Laughter]
+        text = re.sub(r"\[.*?\]", "", text).strip()
+        return text
+
+    except Exception as e:
+        raise ValueError(f"Could not fetch transcript: {str(e)}")
+
+
+async def fetch_youtube_text(url: str) -> tuple[str, str]:
+    """Fetch transcript + video title from a YouTube URL."""
+    video_id = extract_video_id(url)
+
+    # Fetch transcript in thread (blocking SDK call)
+    loop = asyncio.get_event_loop()
+    transcript_text = await loop.run_in_executor(
+        executor, fetch_youtube_transcript_sync, video_id
+    )
+
+    # Fetch video title from oEmbed API (lightweight, no API key needed)
+    name = f"youtube-{video_id}"  # fallback name
+    try:
+        oembed_url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(oembed_url)
+            if resp.status_code == 200:
+                name = resp.json().get("title", name)
+    except Exception:
+        pass  # keep fallback name
+
+    return name, transcript_text
+
+
 async def fetch_url_text(url: str) -> tuple[str, str]:
     """
     Auto-detect URL type and return (name, text).
-    Returns a clean name derived from the URL slug.
+    Supports: YouTube videos, GitHub repos, blog/article pages.
     """
-    if is_github_url(url):
+    if is_youtube_url(url):
+        return await fetch_youtube_text(url)
+    elif is_github_url(url):
         text = await fetch_github_readme(url)
-        # Name = "user/repo"
         parts = urlparse(url).path.strip("/").split("/")
         name = f"{parts[0]}/{parts[1]}" if len(parts) >= 2 else url
+        return name, text
     else:
         text = await fetch_blog_text(url)
-        # Name = last path segment or domain
         path = urlparse(url).path.strip("/")
         slug = path.split("/")[-1] or urlparse(url).netloc
-        # Clean slug: remove file extensions, replace hyphens/underscores
         name = re.sub(r'\.[a-z]{2,4}$', '', slug).replace("-", " ").replace("_", " ") or url
-    return name, text
+        return name, text
 
 
 # -------------------------
