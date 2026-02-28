@@ -20,7 +20,7 @@ app = FastAPI()
 # -------------------------
 # INITIALIZATION
 # -------------------------
-genai.configure(api_key="AIzaSyBna-EWkPPcjKcs5AAUirw0qKj7tfchBDE")
+genai.configure(api_key="")
 gemini_model = genai.GenerativeModel("gemini-2.5-flash")
 
 kw_model = KeyBERT()
